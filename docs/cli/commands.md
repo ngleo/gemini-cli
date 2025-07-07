@@ -2,6 +2,14 @@
 
 Gemini CLI supports several built-in commands to help you manage your session, customize the interface, and control its behavior. These commands are prefixed with a forward slash (`/`), an at symbol (`@`), or an exclamation mark (`!`).
 
+## Global Keyboard Shortcuts
+
+These shortcuts are available globally within the interactive CLI mode:
+
+- **`Ctrl+L`**: Clear the terminal screen. Equivalent to the `/clear` command.
+- **`Ctrl+O`**: Capture a screenshot. The captured image will be prepared to be included as part of your next prompt.
+- **`Ctrl+T`**: Toggle the display of detailed descriptions for MCP (Model Context Protocol) tools. Equivalent to using `/mcp desc` and `/mcp nodesc`.
+
 ## Slash commands (`/`)
 
 Slash commands provide meta-level control over the CLI itself.
@@ -23,7 +31,7 @@ Slash commands provide meta-level control over the CLI itself.
 
 - **`/clear`**
   - **Description:** Clear the terminal screen, including the visible session history and scrollback within the CLI. The underlying session data (for history recall) might be preserved depending on the exact implementation, but the visual display is cleared.
-  - **Keyboard shortcut:** Press **Ctrl+L** at any time to perform a clear action.
+  - **Note:** Also available via the **Ctrl+L** global keyboard shortcut.
 
 - **`/compress`**
   - **Description:** Replace the entire chat context with a summary. This saves on tokens used for future tasks while retaining a high level summary of what has happened.
@@ -43,7 +51,7 @@ Slash commands provide meta-level control over the CLI itself.
       - **Description:** Hide tool descriptions, showing only the tool names.
     - **`schema`**:
       - **Description:** Show the full JSON schema for the tool's configured parameters.
-  - **Keyboard Shortcut:** Press **Ctrl+T** at any time to toggle between showing and hiding tool descriptions.
+  - **Note:** Toggling descriptions is also available via the **Ctrl+T** global keyboard shortcut.
 
 - **`/memory`**
   - **Description:** Manage the AI's instructional context (hierarchical memory loaded from `GEMINI.md` files).

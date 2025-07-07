@@ -66,6 +66,8 @@ import { useGitBranchName } from './hooks/useGitBranchName.js';
 import { useBracketedPaste } from './hooks/useBracketedPaste.js';
 import { useTextBuffer } from './components/shared/text-buffer.js';
 import * as fs from 'fs';
+import { captureScreenshotAndGetImageData } from '../utils/screenshot.js';
+// getErrorMessage is already imported from @google/gemini-cli-core
 import { UpdateNotification } from './components/UpdateNotification.js';
 import { checkForUpdates } from './utils/updateCheck.js';
 import ansiEscapes from 'ansi-escapes';
@@ -132,6 +134,12 @@ const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
   const ctrlDTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [constrainHeight, setConstrainHeight] = useState<boolean>(true);
   const [showPrivacyNotice, setShowPrivacyNotice] = useState<boolean>(false);
+
+  // State for screenshot functionality
+  const [screenshotData, setScreenshotData] = useState<object | null>(null);
+  const [isCapturingScreenshot, setIsCapturingScreenshot] =
+    useState<boolean>(false);
+  const [screenshotError, setScreenshotError] = useState<string | null>(null);
 
   const openPrivacyNotice = useCallback(() => {
     setShowPrivacyNotice(true);
@@ -353,9 +361,45 @@ const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
       setConstrainHeight(true);
     }
 
-    if (key.ctrl && input === 'o') {
-      setShowErrorDetails((prev) => !prev);
-    } else if (key.ctrl && input === 't') {
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    (async () => {
+      if (key.ctrl && input === 'o') {
+        // If already capturing, do nothing
+        if (isCapturingScreenshot) {
+          return;
+        }
+        // Clear previous error/data
+        setScreenshotError(null);
+        setScreenshotData(null); // Clear previous screenshot if any
+        setIsCapturingScreenshot(true);
+        try {
+          const data = await captureScreenshotAndGetImageData();
+          setScreenshotData(data);
+          addItem(
+            {
+              type: MessageType.INFO,
+              text: 'Screenshot captured. Enter your prompt or type to discard.',
+            },
+            Date.now(),
+          );
+        } catch (err) {
+          console.error('Screenshot capture failed:', err); // Keep console for debugging
+          const errorMessage = getErrorMessage(err);
+          setScreenshotError(`Failed to capture screenshot: ${errorMessage}`);
+          addItem(
+            {
+              type: MessageType.ERROR,
+              text: `Screenshot failed: ${errorMessage}`,
+            },
+            Date.now(),
+          );
+        } finally {
+          setIsCapturingScreenshot(false);
+        }
+      }
+    })();
+
+    if (key.ctrl && input === 't') {
       const newValue = !showToolDescriptions;
       setShowToolDescriptions(newValue);
 
@@ -429,12 +473,36 @@ const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
   const handleFinalSubmit = useCallback(
     (submittedValue: string) => {
       const trimmedValue = submittedValue.trim();
-      if (trimmedValue.length > 0) {
-        submitQuery(trimmedValue);
+      // Submit if there's text OR if there's screenshot data (even with empty text)
+      if (trimmedValue.length > 0 || screenshotData) {
+        // Pass both text and screenshotData to submitQuery
+        // submitQuery (via useGeminiStream) will need to be adapted to handle this
+        submitQuery(trimmedValue, screenshotData);
+        setScreenshotData(null); // Clear screenshot after submission
+        // Also clear the text buffer after submission with screenshot
+        if (screenshotData) {
+          buffer.setText('');
+        }
       }
     },
-    [submitQuery],
+    [submitQuery, screenshotData, setScreenshotData, buffer],
   );
+
+  // Effect to clear screenshot data if text is typed into the buffer
+  // and a screenshot is already attached.
+  useEffect(() => {
+    if (buffer.text.length > 0 && screenshotData) {
+      setScreenshotData(null);
+      // Optionally, add an info message that the screenshot was discarded
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: 'Screenshot attachment removed due to new text input.',
+        },
+        Date.now(),
+      );
+    }
+  }, [buffer.text, screenshotData, addItem, setScreenshotData]);
 
   const logger = useLogger();
   const [userMessages, setUserMessages] = useState<string[]>([]);
@@ -774,8 +842,33 @@ const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
                   slashCommands={slashCommands}
                   shellModeActive={shellModeActive}
                   setShellModeActive={setShellModeActive}
+                  // Pass screenshotData and setter to InputPrompt
+                  screenshotData={screenshotData}
+                  setScreenshotData={setScreenshotData}
                 />
               )}
+              {/* Display screenshot status messages */}
+              {isCapturingScreenshot && (
+                <Box marginTop={1}>
+                  <Text color={Colors.AccentBlue}>
+                    Capturing screenshot...
+                  </Text>
+                </Box>
+              )}
+              {screenshotError && !isCapturingScreenshot && (
+                <Box marginTop={1}>
+                  <Text color={Colors.AccentRed}>{screenshotError}</Text>
+                </Box>
+              )}
+              {!isCapturingScreenshot &&
+                screenshotData &&
+                !screenshotError && (
+                  <Box marginTop={1}>
+                    <Text color={Colors.AccentGreen}>
+                      Screenshot attached. Type your prompt or press Enter.
+                    </Text>
+                  </Box>
+                )}
             </>
           )}
 

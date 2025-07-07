@@ -200,60 +200,87 @@ export const useGeminiStream = (
 
   const prepareQueryForGemini = useCallback(
     async (
-      query: PartListUnion,
+      query: string | PartListUnion, // Can be string if screenshotData is present
+      screenshotData: any | null, // Added screenshotData
       userMessageTimestamp: number,
       abortSignal: AbortSignal,
     ): Promise<{
-      queryToSend: PartListUnion | null;
+      queryToSend: PartListUnion | null; // Changed to PartListUnion
       shouldProceed: boolean;
     }> => {
       if (turnCancelledRef.current) {
         return { queryToSend: null, shouldProceed: false };
       }
-      if (typeof query === 'string' && query.trim().length === 0) {
-        return { queryToSend: null, shouldProceed: false };
-      }
 
-      let localQueryToSendToGemini: PartListUnion | null = null;
+      let queryParts: Part[] = [];
+      let userTextForHistory = ''; // For adding to UI history
+      let processedQueryForSlashCmd: string | PartListUnion = query;
 
       if (typeof query === 'string') {
         const trimmedQuery = query.trim();
+        userTextForHistory = trimmedQuery;
+        processedQueryForSlashCmd = trimmedQuery;
+
+        if (trimmedQuery.length === 0 && !screenshotData) {
+          // Nothing to send if no text and no screenshot
+          return { queryToSend: null, shouldProceed: false };
+        }
+
+        // Log the textual part of the prompt, and indicate if an image is attached
         logUserPrompt(
           config,
-          new UserPromptEvent(trimmedQuery.length, trimmedQuery),
+          new UserPromptEvent(
+            trimmedQuery.length,
+            trimmedQuery + (screenshotData ? ' [image attached]' : ''),
+          ),
         );
-        onDebugMessage(`User query: '${trimmedQuery}'`);
-        await logger?.logMessage(MessageSenderType.USER, trimmedQuery);
+        onDebugMessage(
+          `User query: '${trimmedQuery}'${screenshotData ? ' with screenshot.' : ''}`,
+        );
+        await logger?.logMessage(
+          MessageSenderType.USER,
+          trimmedQuery + (screenshotData ? ' [image attached]' : ''),
+        );
 
-        // Handle UI-only commands first
-        const slashCommandResult = await handleSlashCommand(trimmedQuery);
-        if (typeof slashCommandResult === 'boolean' && slashCommandResult) {
-          // Command was handled, and it doesn't require a tool call from here
-          return { queryToSend: null, shouldProceed: false };
-        } else if (
-          typeof slashCommandResult === 'object' &&
-          slashCommandResult.shouldScheduleTool
-        ) {
-          // Slash command wants to schedule a tool call (e.g., /memory add)
-          const { toolName, toolArgs } = slashCommandResult;
-          if (toolName && toolArgs) {
-            const toolCallRequest: ToolCallRequestInfo = {
-              callId: `${toolName}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-              name: toolName,
-              args: toolArgs,
-              isClientInitiated: true,
-            };
-            scheduleToolCalls([toolCallRequest], abortSignal);
+        // Handle UI-only commands first (typically don't accompany screenshots)
+        if (!screenshotData) {
+          const slashCommandResult = await handleSlashCommand(
+            processedQueryForSlashCmd,
+          );
+          if (typeof slashCommandResult === 'boolean' && slashCommandResult) {
+            // Command was handled, and it doesn't require a tool call from here
+            return { queryToSend: null, shouldProceed: false };
+          } else if (
+            typeof slashCommandResult === 'object' &&
+            slashCommandResult.shouldScheduleTool
+          ) {
+            // Slash command wants to schedule a tool call (e.g., /memory add)
+            const { toolName, toolArgs } = slashCommandResult;
+            if (toolName && toolArgs) {
+              const toolCallRequest: ToolCallRequestInfo = {
+                callId: `${toolName}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                name: toolName,
+                args: toolArgs,
+                isClientInitiated: true,
+              };
+              scheduleToolCalls([toolCallRequest], abortSignal);
+            }
+            return { queryToSend: null, shouldProceed: false }; // Handled by scheduling the tool
           }
-          return { queryToSend: null, shouldProceed: false }; // Handled by scheduling the tool
-        }
 
-        if (shellModeActive && handleShellCommand(trimmedQuery, abortSignal)) {
-          return { queryToSend: null, shouldProceed: false };
-        }
+          if (
+            shellModeActive &&
+            handleShellCommand(trimmedQuery, abortSignal) // shell command uses original trimmed query
+          ) {
+            return { queryToSend: null, shouldProceed: false };
+          }
+        } // End of !screenshotData block for slash/shell commands
 
-        // Handle @-commands (which might involve tool calls)
-        if (isAtCommand(trimmedQuery)) {
+        // Handle @-commands.
+        // If a screenshot is present, @-commands might need careful consideration.
+        // For now, assume they modify the text part only or are not used with screenshots.
+        let queryAfterAtCommand: string | PartListUnion = trimmedQuery;
+        if (isAtCommand(trimmedQuery) && !screenshotData) {
           const atCommandResult = await handleAtCommand({
             query: trimmedQuery,
             config,
@@ -265,27 +292,60 @@ export const useGeminiStream = (
           if (!atCommandResult.shouldProceed) {
             return { queryToSend: null, shouldProceed: false };
           }
-          localQueryToSendToGemini = atCommandResult.processedQuery;
-        } else {
-          // Normal query for Gemini
-          addItem(
-            { type: MessageType.USER, text: trimmedQuery },
-            userMessageTimestamp,
-          );
-          localQueryToSendToGemini = trimmedQuery;
+          queryAfterAtCommand = atCommandResult.processedQuery;
         }
+
+        // Construct the parts for Gemini
+        if (typeof queryAfterAtCommand === 'string') {
+          if (queryAfterAtCommand.length > 0) {
+            queryParts.push({ text: queryAfterAtCommand });
+          }
+          userTextForHistory = queryAfterAtCommand; // Update history text if @command changed it
+        } else {
+          // queryAfterAtCommand is PartListUnion (already an array of Parts or a single Part object)
+          queryParts.push(
+            ...(Array.isArray(queryAfterAtCommand)
+              ? queryAfterAtCommand
+              : [queryAfterAtCommand]),
+          );
+          // Try to find a text part for history from the @command result
+          const textPart = queryParts.find((p): p is Extract<Part, {text: string}> => 'text' in p);
+          userTextForHistory =
+            textPart && 'text' in textPart
+              ? textPart.text
+              : '[structured @command response]';
+        }
+
+        if (screenshotData && screenshotData.inline_data) {
+          queryParts.push({ inline_data: screenshotData.inline_data });
+          userTextForHistory += ' [image attached]';
+        }
+
+        // Add the user's complete input (text + image indicator) to history
+        // This should only happen if it's not a continuation (tool response)
+        // The check for options.isContinuation is in submitQuery
+        addItem(
+          { type: MessageType.USER, text: userTextForHistory },
+          userMessageTimestamp,
+        );
       } else {
-        // It's a function response (PartListUnion that isn't a string)
-        localQueryToSendToGemini = query;
+        // Query is already PartListUnion (e.g., tool response), screenshots not applicable here.
+        queryParts = Array.isArray(query) ? query : [query];
+        if (screenshotData) {
+          onDebugMessage(
+            'Screenshot data provided with non-string query (e.g. tool response). Ignoring screenshot.',
+          );
+        }
       }
 
-      if (localQueryToSendToGemini === null) {
+      if (queryParts.length === 0) {
         onDebugMessage(
-          'Query processing resulted in null, not sending to Gemini.',
+          'Query processing resulted in no parts to send to Gemini.',
         );
         return { queryToSend: null, shouldProceed: false };
       }
-      return { queryToSend: localQueryToSendToGemini, shouldProceed: true };
+
+      return { queryToSend: queryParts, shouldProceed: true };
     },
     [
       config,
@@ -491,7 +551,11 @@ export const useGeminiStream = (
   );
 
   const submitQuery = useCallback(
-    async (query: PartListUnion, options?: { isContinuation: boolean }) => {
+    async (
+      query: string | PartListUnion, // Text from input OR PartListUnion for tool responses
+      screenshotData?: any | null, // Optional screenshot data
+      options?: { isContinuation: boolean },
+    ) => {
       if (
         (streamingState === StreamingState.Responding ||
           streamingState === StreamingState.WaitingForConfirmation) &&
@@ -506,13 +570,16 @@ export const useGeminiStream = (
       const abortSignal = abortControllerRef.current.signal;
       turnCancelledRef.current = false;
 
+      // Pass screenshotData to prepareQueryForGemini
       const { queryToSend, shouldProceed } = await prepareQueryForGemini(
         query,
+        options?.isContinuation ? null : screenshotData, // Only pass screenshot if not a continuation
         userMessageTimestamp,
         abortSignal,
       );
 
-      if (!shouldProceed || queryToSend === null) {
+      if (!shouldProceed || queryToSend === null || queryToSend.length === 0) {
+        // If queryToSend is an empty array, also return
         return;
       }
 

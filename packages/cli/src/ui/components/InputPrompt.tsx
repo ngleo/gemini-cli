@@ -34,6 +34,8 @@ export interface InputPromptProps {
   suggestionsWidth: number;
   shellModeActive: boolean;
   setShellModeActive: (value: boolean) => void;
+  screenshotData?: object | null;
+  setScreenshotData?: (data: object | null) => void; // Not directly used here, but passed from App
 }
 
 export const InputPrompt: React.FC<InputPromptProps> = ({
@@ -375,6 +377,11 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
 
   return (
     <>
+      {screenshotData && (
+        <Box marginBottom={1} marginLeft={1}>
+          <Text color={Colors.AccentGreen}>[Screenshot attached]</Text>
+        </Box>
+      )}
       <Box
         borderStyle="round"
         borderColor={shellModeActive ? Colors.AccentYellow : Colors.AccentBlue}

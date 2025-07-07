@@ -15,8 +15,16 @@ import {
   AccessibilitySettings,
   SandboxConfig,
 } from '@google/gemini-cli-core';
-import { LoadedSettings, SettingsFile, Settings } from '../config/settings.js';
+import { LoadedSettings, SettingsFile, Settings, defaultSettings } from '../config/settings.js';
 import process from 'node:process';
+import { Key as InkKeyType } from 'ink';
+
+
+// Mock screenshot utility
+vi.mock('../utils/screenshot');
+import { captureScreenshotAndGetImageData } from '../utils/screenshot.js';
+const mockedCaptureScreenshot = captureScreenshotAndGetImageData as vi.MockedFunction<typeof captureScreenshotAndGetImageData>;
+
 
 // Define a more complete mock server config based on actual Config
 interface MockServerConfig {
@@ -177,24 +185,37 @@ describe('App UI', () => {
   let mockConfig: MockServerConfig;
   let mockSettings: LoadedSettings;
   let currentUnmount: (() => void) | undefined;
+  // To store the actual useInput handler if we can grab it. For now, not used.
+  let appInputHandler: ((input: string, key: InkKeyType) => void) | undefined;
+
 
   const createMockSettings = (
     settings: Partial<Settings> = {},
   ): LoadedSettings => {
+    // Use a deep clone of defaultSettings.merged to avoid test interference
+    const baseSettings = JSON.parse(JSON.stringify(defaultSettings.merged));
     const userSettingsFile: SettingsFile = {
       path: '/user/settings.json',
-      settings: {},
+      settings: {}, // User specific overrides could go here
     };
     const workspaceSettingsFile: SettingsFile = {
       path: '/workspace/.gemini/settings.json',
-      settings: {
-        ...settings,
+      settings: { // Project specific overrides
+        ...settings, // Passed in overrides for the test
       },
     };
-    return new LoadedSettings(userSettingsFile, workspaceSettingsFile, []);
+    // Create LoadedSettings with a base and merge in project/user specifics
+    // This ensures all default keys are present.
+    const loaded = new LoadedSettings(userSettingsFile, workspaceSettingsFile, []);
+    // Ensure merged settings reflect the test's intent over defaults
+    loaded.merged = { ...baseSettings, ...settings };
+    loaded.merged.autoConfigureMaxOldSpaceSize = false; // Important for tests
+    return loaded;
   };
 
+
   beforeEach(() => {
+    mockedCaptureScreenshot.mockReset();
     const ServerConfigMocked = vi.mocked(ServerConfig, true);
     mockConfig = new ServerConfigMocked({
       embeddingModel: 'test-embedding-model',
@@ -215,8 +236,8 @@ describe('App UI', () => {
     }
     mockConfig.getShowMemoryUsage.mockReturnValue(false); // Default for most tests
 
-    // Ensure a theme is set so the theme dialog does not appear.
-    mockSettings = createMockSettings({ theme: 'Default' });
+    // Ensure a theme is set so the theme dialog does not appear by default.
+    mockSettings = createMockSettings({ theme: 'Default', autoConfigureMaxOldSpaceSize: false });
   });
 
   afterEach(() => {
@@ -225,7 +246,22 @@ describe('App UI', () => {
       currentUnmount = undefined;
     }
     vi.clearAllMocks(); // Clear mocks after each test
+    mockedCaptureScreenshot.mockClear();
   });
+
+  // Helper function to render the app for tests
+  // It's important that mockConfig and mockSettings are set up before calling this
+  const renderTestApp = () => {
+    const { lastFrame, unmount, stdin } = render(
+      <App
+        config={mockConfig as unknown as ServerConfig}
+        settings={mockSettings}
+      />,
+    );
+    currentUnmount = unmount;
+    return { lastFrame, stdin };
+  };
+
 
   it('should display default "GEMINI.md" in footer when contextFileName is not set and count is 1', async () => {
     mockConfig.getGeminiMdFileCount.mockReturnValue(1);
@@ -233,13 +269,7 @@ describe('App UI', () => {
     mockConfig.getDebugMode.mockReturnValue(false);
     mockConfig.getShowMemoryUsage.mockReturnValue(false);
 
-    const { lastFrame, unmount } = render(
-      <App
-        config={mockConfig as unknown as ServerConfig}
-        settings={mockSettings}
-      />,
-    );
-    currentUnmount = unmount;
+    const { lastFrame } = renderTestApp();
     await Promise.resolve(); // Wait for any async updates
     expect(lastFrame()).toContain('Using 1 GEMINI.md file');
   });
@@ -249,13 +279,7 @@ describe('App UI', () => {
     mockConfig.getDebugMode.mockReturnValue(false);
     mockConfig.getShowMemoryUsage.mockReturnValue(false);
 
-    const { lastFrame, unmount } = render(
-      <App
-        config={mockConfig as unknown as ServerConfig}
-        settings={mockSettings}
-      />,
-    );
-    currentUnmount = unmount;
+    const { lastFrame } = renderTestApp();
     await Promise.resolve();
     expect(lastFrame()).toContain('Using 2 GEMINI.md files');
   });
@@ -269,13 +293,7 @@ describe('App UI', () => {
     mockConfig.getDebugMode.mockReturnValue(false);
     mockConfig.getShowMemoryUsage.mockReturnValue(false);
 
-    const { lastFrame, unmount } = render(
-      <App
-        config={mockConfig as unknown as ServerConfig}
-        settings={mockSettings}
-      />,
-    );
-    currentUnmount = unmount;
+    const { lastFrame } = renderTestApp();
     await Promise.resolve();
     expect(lastFrame()).toContain('Using 1 AGENTS.md file');
   });
@@ -289,13 +307,7 @@ describe('App UI', () => {
     mockConfig.getDebugMode.mockReturnValue(false);
     mockConfig.getShowMemoryUsage.mockReturnValue(false);
 
-    const { lastFrame, unmount } = render(
-      <App
-        config={mockConfig as unknown as ServerConfig}
-        settings={mockSettings}
-      />,
-    );
-    currentUnmount = unmount;
+    const { lastFrame } = renderTestApp();
     await Promise.resolve();
     expect(lastFrame()).toContain('Using 2 context files');
   });
@@ -309,13 +321,7 @@ describe('App UI', () => {
     mockConfig.getDebugMode.mockReturnValue(false);
     mockConfig.getShowMemoryUsage.mockReturnValue(false);
 
-    const { lastFrame, unmount } = render(
-      <App
-        config={mockConfig as unknown as ServerConfig}
-        settings={mockSettings}
-      />,
-    );
-    currentUnmount = unmount;
+    const { lastFrame } = renderTestApp();
     await Promise.resolve();
     expect(lastFrame()).toContain('Using 3 MY_NOTES.TXT files');
   });
@@ -329,13 +335,7 @@ describe('App UI', () => {
     mockConfig.getDebugMode.mockReturnValue(false);
     mockConfig.getShowMemoryUsage.mockReturnValue(false);
 
-    const { lastFrame, unmount } = render(
-      <App
-        config={mockConfig as unknown as ServerConfig}
-        settings={mockSettings}
-      />,
-    );
-    currentUnmount = unmount;
+    const { lastFrame } = renderTestApp();
     await Promise.resolve();
     expect(lastFrame()).not.toContain('ANY_FILE.MD');
   });
@@ -348,13 +348,7 @@ describe('App UI', () => {
     mockConfig.getDebugMode.mockReturnValue(false);
     mockConfig.getShowMemoryUsage.mockReturnValue(false);
 
-    const { lastFrame, unmount } = render(
-      <App
-        config={mockConfig as unknown as ServerConfig}
-        settings={mockSettings}
-      />,
-    );
-    currentUnmount = unmount;
+    const { lastFrame } = renderTestApp();
     await Promise.resolve();
     expect(lastFrame()).toContain('server');
   });
@@ -368,16 +362,103 @@ describe('App UI', () => {
     mockConfig.getDebugMode.mockReturnValue(false);
     mockConfig.getShowMemoryUsage.mockReturnValue(false);
 
-    const { lastFrame, unmount } = render(
-      <App
-        config={mockConfig as unknown as ServerConfig}
-        settings={mockSettings}
-      />,
-    );
-    currentUnmount = unmount;
+    const { lastFrame } = renderTestApp();
     await Promise.resolve();
     expect(lastFrame()).toContain('Using 2 MCP servers');
   });
+
+
+  // Screenshot related tests
+  // We need to mock or intercept the useInput hook's callback for these tests
+  // as simulating Ctrl+O via stdin.write is unreliable for global handlers.
+  // For now, these tests will focus on the state changes *after* the capture logic is invoked.
+
+  describe('Screenshot Functionality (Ctrl+O)', () => {
+    // Mock the useInput hook to allow invoking its handler
+    let capturedUseInputHandler: (input: string, key: InkKeyType) => void = () => {};
+    const mockUseInput = vi.fn();
+
+    beforeEach(() => {
+      vi.doMock('ink', async () => {
+        const actualInk = await vi.importActual<typeof import('ink')>('ink');
+        return {
+          ...actualInk,
+          useInput: (handler: (input: string, key: InkKeyType) => void) => {
+            capturedUseInputHandler = handler; // Capture the handler
+            mockUseInput(handler); // Call the mock so we can assert it was called
+            return actualInk.useInput(handler); // Return the actual hook for App to use
+          },
+        };
+      });
+      // Reset mocks that might have been set at the top level of the describe block
+      mockedCaptureScreenshot.mockReset();
+      // Default mock settings for screenshot tests
+      mockSettings = createMockSettings({ theme: 'Default', autoConfigureMaxOldSpaceSize: false });
+      // Ensure useHistory's addItem is mocked for assertions
+      const { useHistory } = await import('./hooks/useHistoryManager.js');
+      (useHistory as vi.Mock).mockReturnValue({
+        history: [],
+        addItem: vi.fn(),
+        clearItems: vi.fn(),
+        loadHistory: vi.fn(),
+      });
+    });
+
+    afterEach(async () => {
+      vi.resetModules(); // Important to reset modules to un-mock 'ink' for other tests
+    });
+
+    it('should call captureScreenshotAndGetImageData and display success message on Ctrl+O', async () => {
+      const mockScreenshotPayload = { inline_data: { mime_type: 'image/png', data: 'testimgdata' } };
+      mockedCaptureScreenshot.mockResolvedValue(mockScreenshotPayload);
+
+      const { lastFrame } = renderTestApp();
+
+      // Simulate the Ctrl+O key press by directly invoking the captured handler
+      // Wait for next tick to allow effects to run if any before key press
+      await new Promise(resolve => setTimeout(resolve, 0));
+      capturedUseInputHandler('o', { ctrl: true, meta: false, shift: false, name: 'o' });
+
+      expect(mockedCaptureScreenshot).toHaveBeenCalledTimes(1);
+
+      // Check for "Capturing screenshot..." immediately (might be too fast to catch)
+      // Then wait for the promise to resolve
+      await new Promise(resolve => setTimeout(resolve, 0)); // Allow state updates
+
+      const { useHistory } = await import('./hooks/useHistoryManager.js');
+      const addItemMock = (useHistory as vi.Mock)().addItem;
+      expect(addItemMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'info', text: expect.stringContaining('Screenshot captured') }),
+        expect.any(Number)
+      );
+      expect(lastFrame()).toContain('Screenshot attached');
+    });
+
+    it('should display error message if captureScreenshotAndGetImageData fails on Ctrl+O', async () => {
+      const errorMessage = 'Screenshot failed miserably';
+      mockedCaptureScreenshot.mockRejectedValue(new Error(errorMessage));
+
+      const { lastFrame } = renderTestApp();
+
+      await new Promise(resolve => setTimeout(resolve, 0));
+      capturedUseInputHandler('o', { ctrl: true, meta: false, shift: false, name: 'o' });
+
+      expect(mockedCaptureScreenshot).toHaveBeenCalledTimes(1);
+
+      await new Promise(resolve => setTimeout(resolve, 0)); // Allow state updates
+
+      const { useHistory } = await import('./hooks/useHistoryManager.js');
+      const addItemMock = (useHistory as vi.Mock)().addItem;
+
+      expect(addItemMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', text: expect.stringContaining(errorMessage) }),
+        expect.any(Number)
+      );
+      expect(lastFrame()).toContain(errorMessage);
+      expect(lastFrame()).not.toContain('Screenshot attached');
+    });
+  });
+
 
   describe('when no theme is set', () => {
     let originalNoColor: string | undefined;
@@ -396,28 +477,18 @@ describe('App UI', () => {
 
     it('should display theme dialog if NO_COLOR is not set', async () => {
       delete process.env.NO_COLOR;
+      mockSettings = createMockSettings({ autoConfigureMaxOldSpaceSize: false }); // No theme
 
-      const { lastFrame, unmount } = render(
-        <App
-          config={mockConfig as unknown as ServerConfig}
-          settings={mockSettings}
-        />,
-      );
-      currentUnmount = unmount;
 
+      const { lastFrame } = renderTestApp();
       expect(lastFrame()).toContain('Select Theme');
     });
 
     it('should display a message if NO_COLOR is set', async () => {
       process.env.NO_COLOR = 'true';
+      mockSettings = createMockSettings({ autoConfigureMaxOldSpaceSize: false }); // No theme
 
-      const { lastFrame, unmount } = render(
-        <App
-          config={mockConfig as unknown as ServerConfig}
-          settings={mockSettings}
-        />,
-      );
-      currentUnmount = unmount;
+      const { lastFrame } = renderTestApp();
 
       expect(lastFrame()).toContain(
         'Theme configuration unavailable due to NO_COLOR env variable.',
